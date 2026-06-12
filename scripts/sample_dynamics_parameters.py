@@ -7,7 +7,6 @@ rl_tools l2f sample_initial_parameters() logic.
 """
 
 import argparse
-import copy
 import json
 import math
 import random
@@ -175,10 +174,11 @@ def cbrt(value: float) -> float:
 def sample_domain_randomization_factor(rng: random.Random, value_range: float) -> float:
     """Reciprocal scale factor used by RLtools for size deviations.
 
-    RAPTOR samples a value in [-range, range]. Positive values become 1 + x,
-    while negative values become 1 / (1 - x), giving roughly symmetric scaling.
+    RAPTOR calls normal_distribution::sample(device.random, -range, range, rng).
+    We map that to Python as Gaussian(mean=-range, std=range). Positive values
+    become 1 + x, while negative values become 1 / (1 - x).
     """
-    factor = rng.uniform(-value_range, value_range)
+    factor = rng.gauss(-value_range, value_range)
     return 1.0 / (1.0 - factor) if factor < 0.0 else 1.0 + factor
 
 
@@ -268,7 +268,15 @@ def sample_parameters(rng: random.Random) -> Dict[str, Any]:
     )
     dynamics["rotor_torque_constants"] = [torque_constant] * N_ROTORS
 
-    # 7. Sample first-order motor response time constants, seconds.
+    # 7. Match RAPTOR's disturbance-force randomization for sampled files.
+    surplus_thrust_to_weight = max(0.0, thrust_to_weight - 1.0)
+    disturbance_multiple = rng.uniform(
+        0.0, surplus_thrust_to_weight * ranges["disturbance_force_max"]
+    )
+    disturbance_force_std = disturbance_multiple * thrust_to_weight * dynamics["mass"] / 3.0
+    params["disturbances"]["random_force"] = {"mean": 0.0, "std": disturbance_force_std}
+
+    # 8. Sample first-order motor response time constants, seconds.
     rising = rng.uniform(
         ranges["rotor_time_constant_rising_min"],
         ranges["rotor_time_constant_rising_max"],
@@ -280,17 +288,8 @@ def sample_parameters(rng: random.Random) -> Dict[str, Any]:
     dynamics["rotor_time_constants_rising"] = [rising] * N_ROTORS
     dynamics["rotor_time_constants_falling"] = [falling] * N_ROTORS
 
-    # 8. Match RAPTOR's disturbance-force randomization for sampled files.
-    surplus_thrust_to_weight = max(0.0, thrust_to_weight - 1.0)
-    disturbance_multiple = rng.uniform(
-        0.0, surplus_thrust_to_weight * ranges["disturbance_force_max"]
-    )
-    disturbance_force_std = disturbance_multiple * thrust_to_weight * dynamics["mass"] / 3.0
-    params["disturbances"]["random_force"] = {"mean": 0.0, "std": disturbance_force_std}
-
     # RAPTOR disables future domain randomization in saved pre-training JSON files.
     params["domain_randomization"] = domain_randomization_disabled()
-    update_hovering_throttle(dynamics)
     return params
 
 

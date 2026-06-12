@@ -9,7 +9,15 @@ This package was written by reading RAPTOR's parameter sampler:
 It also mirrors the core `rl_tools` L2F sampling order: sample thrust-to-weight,
 sample mass through a uniform size distribution, scale thrust curves, sample a
 torque-to-inertia ratio, scale arm length and inertia, then sample rotor torque
-constants and motor rising/falling time constants.
+constants, disturbance force, and motor rising/falling time constants.
+
+This Python implementation follows RAPTOR's sampling distribution logic, but it
+does not guarantee byte-for-byte identical JSON for the same seed because Python
+and C++ use different random number generators and distribution implementations.
+
+`hovering_throttle_relative` is intentionally left at the nominal Crazyflie value.
+RAPTOR's official `sample_initial_parameters` path scales the thrust curve and
+mass but does not recompute this field before saving the sampled JSON files.
 
 The `raptor` package is only used as a reference and is not modified.
 
