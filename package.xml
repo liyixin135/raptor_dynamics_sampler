@@ -1,5 +1,6 @@
 <?xml version="1.0"?>
 <package format="2">
+  <!-- Standalone package; RAPTOR is only a reference and is not a dependency. -->
   <name>raptor_dynamics_sampler</name>
   <version>0.1.0</version>
   <description>Standalone Python sampler for RAPTOR-style quadrotor dynamics parameter JSON files.</description>
@@ -7,6 +8,7 @@
   <maintainer email="user@example.com">xin</maintainer>
   <license>MIT</license>
 
+  <!-- Minimal catkin metadata so the package can live in a ROS/catkin src workspace. -->
   <buildtool_depend>catkin</buildtool_depend>
   <exec_depend>python3</exec_depend>
 

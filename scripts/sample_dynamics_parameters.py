@@ -7,7 +7,6 @@ rl_tools l2f sample_initial_parameters() logic.
 """
 
 import argparse
-import copy
 import json
 import math
 import random
@@ -15,6 +14,7 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 
+# RAPTOR's L2F default model here is a quadrotor, so all rotor arrays have length four.
 N_ROTORS = 4
 
 
@@ -77,11 +77,14 @@ def nominal_parameters() -> Dict[str, Any]:
         "action_limit": {"min": 0.0, "max": 1.0},
     }
 
+    # Keep the top-level layout close to rl_tools JSON output so downstream tools can
+    # access familiar paths like parameters["dynamics"]["mass"].
     return {
         "dynamics": dynamics,
         "integration": {"dt": 0.01},
         "mdp": {
             "init": {
+                # Initial-state limits used by the training environment.
                 "guidance": 0.0,
                 "max_position": 1.0,
                 "max_angle": math.pi / 2.0,
@@ -92,6 +95,7 @@ def nominal_parameters() -> Dict[str, Any]:
                 "max_rpm": 1.0,
             },
             "reward": {
+                # Reward weights mirror the overwrite() block in RAPTOR's sampler.
                 "non_negative": False,
                 "scale": 1.0,
                 "constant": 1.5,
@@ -108,6 +112,7 @@ def nominal_parameters() -> Dict[str, Any]:
                 "position_error_integral": 0.0,
             },
             "observation_noise": {
+                # Standard deviations for simulated sensor noise.
                 "position": 0.0,
                 "orientation": 0.0,
                 "linear_velocity": 0.0,
@@ -116,6 +121,7 @@ def nominal_parameters() -> Dict[str, Any]:
             },
             "action_noise": {"normalized_rpm": 0.0},
             "termination": {
+                # Episode termination thresholds. Position is rescaled after arm length sampling.
                 "enabled": True,
                 "position_threshold": 1.0,
                 "linear_velocity_threshold": 2.0,
@@ -125,11 +131,13 @@ def nominal_parameters() -> Dict[str, Any]:
             },
         },
         "disturbances": {
+            # Gaussian external force/torque disturbances; force std is sampled later.
             "random_force": {"mean": 0.0, "std": 0.0},
             "random_torque": {"mean": 0.0, "std": 0.0},
         },
         "domain_randomization": domain_randomization_disabled(),
         "trajectory": {
+            # RAPTOR's trajectory component is preserved for JSON shape compatibility.
             "MIXTURE_N": 2,
             "mixture": [0.5, 0.5],
             "langevin": {"gamma": 1.0, "omega": 2.0, "sigma": 0.5, "alpha": 0.01},
@@ -140,17 +148,23 @@ def nominal_parameters() -> Dict[str, Any]:
 def raptor_sampling_ranges() -> Dict[str, float]:
     """Domain-randomization ranges copied from RAPTOR's pre-training sampler."""
     return {
+        # Maximum available thrust divided by vehicle weight, dimensionless.
         "thrust_to_weight_min": 1.5,
         "thrust_to_weight_max": 5.0,
+        # Approximate maximum body torque divided by roll inertia, rad/s^2.
         "torque_to_inertia_min": 40.0,
         "torque_to_inertia_max": 1200.0,
+        # Mass range in kilograms; sampling is uniform in cube-root mass below.
         "mass_min": 0.02,
         "mass_max": 5.0,
+        # Extra reciprocal scale variation around the mass-derived arm length.
         "mass_size_deviation": 0.1,
+        # Motor first-order response constants in seconds.
         "rotor_time_constant_rising_min": 0.03,
         "rotor_time_constant_rising_max": 0.10,
         "rotor_time_constant_falling_min": 0.03,
         "rotor_time_constant_falling_max": 0.30,
+        # Rotor yaw torque constants used in the thrust-to-drag-torque model.
         "rotor_torque_constant_min": 0.005,
         "rotor_torque_constant_max": 0.05,
         "orientation_offset_angle_max": 0.0,
@@ -160,10 +174,12 @@ def raptor_sampling_ranges() -> Dict[str, float]:
 
 def domain_randomization_disabled() -> Dict[str, float]:
     """RAPTOR writes sampled files with randomization disabled after sampling."""
+    # This matches the C++ sampler's params_copy.domain_randomization assignment before saving.
     return {key: 0.0 for key in raptor_sampling_ranges()}
 
 
 def vector_norm(values: List[float]) -> float:
+    """Euclidean norm for 3D vectors such as gravity and rotor position."""
     return math.sqrt(sum(value * value for value in values))
 
 
@@ -183,6 +199,7 @@ def sample_domain_randomization_factor(rng: random.Random, value_range: float) -
 
 
 def max_total_thrust(dynamics: Dict[str, Any]) -> float:
+    """Evaluate total four-rotor thrust at the maximum action command."""
     max_action = dynamics["action_limit"]["max"]
     total = 0.0
     for c0, c1, c2 in dynamics["rotor_thrust_coefficients"]:
@@ -196,6 +213,7 @@ def update_hovering_throttle(dynamics: Dict[str, Any]) -> None:
     c0 = sum(coeffs[0] for coeffs in dynamics["rotor_thrust_coefficients"]) / N_ROTORS
     c1 = sum(coeffs[1] for coeffs in dynamics["rotor_thrust_coefficients"]) / N_ROTORS
     c2 = sum(coeffs[2] for coeffs in dynamics["rotor_thrust_coefficients"]) / N_ROTORS
+    # Solve c0 + c1*u + c2*u^2 = m*g/4 for the positive hover command.
     if abs(c2) < 1e-12:
         throttle = (per_rotor_hover_thrust - c0) / c1
     else:
@@ -295,6 +313,7 @@ def sample_parameters(rng: random.Random) -> Dict[str, Any]:
 
 
 def write_samples(num: int, seed: int, output_dir: Path) -> None:
+    """Write numbered JSON files using a deterministic PRNG seed."""
     output_dir.mkdir(parents=True, exist_ok=True)
     rng = random.Random(seed)
     for index in range(num):
@@ -306,6 +325,7 @@ def write_samples(num: int, seed: int, output_dir: Path) -> None:
 
 
 def parse_args() -> argparse.Namespace:
+    """Parse the small CLI needed for batch generation experiments."""
     parser = argparse.ArgumentParser(
         description="Generate RAPTOR-style quadrotor dynamics parameter JSON files."
     )
@@ -321,6 +341,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
+    """CLI entry point."""
     args = parse_args()
     if args.num < 0:
         raise ValueError("--num must be non-negative")
