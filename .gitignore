@@ -1,0 +1,4 @@
+__pycache__/
+*.pyc
+dynamics_parameters/
+test_output/
