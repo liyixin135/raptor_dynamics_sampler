@@ -1,6 +1,6 @@
 <?xml version="1.0"?>
 <package format="2">
-  <!-- Standalone package; RAPTOR is only a reference and is not a dependency. -->
+  <!-- 独立包：RAPTOR 只作为参考实现，不作为运行依赖。 -->
   <name>raptor_dynamics_sampler</name>
   <version>0.1.0</version>
   <description>Standalone Python sampler for RAPTOR-style quadrotor dynamics parameter JSON files.</description>
@@ -8,7 +8,7 @@
   <maintainer email="user@example.com">xin</maintainer>
   <license>MIT</license>
 
-  <!-- Minimal catkin metadata so the package can live in a ROS/catkin src workspace. -->
+  <!-- 最小 catkin 元数据，方便该包放在 ROS/catkin 的 src 工作空间中。 -->
   <buildtool_depend>catkin</buildtool_depend>
   <exec_depend>python3</exec_depend>
 
