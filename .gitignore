@@ -4,3 +4,4 @@ test_output/
 dynamics_parameters/
 sample_dynamics_parameters_cpp
 test_output_cpp/
+test_output_cpp_comment/
