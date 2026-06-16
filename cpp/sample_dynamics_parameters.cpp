@@ -9,9 +9,9 @@
 #include <string>
 #include <vector>
 
-// 这个程序是 scripts/sample_dynamics_parameters.py 的 C++17 版本。
-// 目标只做一件事：随机生成四旋翼动力学参数 JSON 文件。
-// 它不依赖 RAPTOR/rl_tools 头文件，方便初学者直接用 g++ 编译运行。
+// Standalone C++17 generator for RAPTOR L2F-style quadrotor dynamics JSON.
+// It intentionally mirrors RAPTOR's sample_initial_parameters() flow without
+// depending on RAPTOR/rl_tools headers.
 
 namespace fs = std::filesystem;
 
@@ -122,7 +122,7 @@ void fill_all(std::array<double, N_ROTORS>& values, double value) {
 }
 
 RangeConfig raptor_sampling_ranges() {
-    // 这些范围来自 RAPTOR 预训练采样器，也是 Python 版本使用的范围。
+    // Keep these ranges aligned with RAPTOR's pre_training/sample_dynamics_parameters.cpp.
     return RangeConfig{};
 }
 
@@ -148,7 +148,7 @@ RangeConfig domain_randomization_disabled() {
 }
 
 Parameters nominal_parameters() {
-    // 基础模板使用 Crazyflie 风格参数，和 Python 版本保持一致。
+    // Crazyflie defaults from RAPTOR's l2f/parameters/dynamics/crazyflie.h.
     Parameters params;
     Dynamics& d = params.dynamics;
 
@@ -196,36 +196,6 @@ double max_total_thrust(const Dynamics& dynamics) {
     return total;
 }
 
-void update_hovering_throttle(Dynamics& dynamics) {
-    // 悬停时四个电机总推力等于重力：sum(thrust_i) = mass * |gravity|。
-    const double per_rotor_hover_thrust = dynamics.mass * vector_norm(dynamics.gravity) / N_ROTORS;
-    double c0 = 0.0;
-    double c1 = 0.0;
-    double c2 = 0.0;
-    for (const auto& coeffs : dynamics.rotor_thrust_coefficients) {
-        c0 += coeffs[0];
-        c1 += coeffs[1];
-        c2 += coeffs[2];
-    }
-    c0 /= N_ROTORS;
-    c1 /= N_ROTORS;
-    c2 /= N_ROTORS;
-
-    double throttle = 0.0;
-    if (std::abs(c2) < 1e-12) {
-        // 如果二次项非常小，就退化为线性方程：c0 + c1*u = hover_thrust。
-        throttle = (per_rotor_hover_thrust - c0) / c1;
-    } else {
-        // 解二次方程：c2*u^2 + c1*u + (c0 - hover_thrust) = 0。
-        const double discriminant = std::max(0.0, c1 * c1 - 4.0 * c2 * (c0 - per_rotor_hover_thrust));
-        throttle = (-c1 + std::sqrt(discriminant)) / (2.0 * c2);
-    }
-
-    const double min_action = dynamics.action_limit.min;
-    const double max_action = dynamics.action_limit.max;
-    dynamics.hovering_throttle_relative = (throttle - min_action) / (max_action - min_action);
-}
-
 double sample_domain_randomization_factor(std::mt19937& rng, double value_range) {
     // RAPTOR/rl_tools 对尺寸偏差使用一个 reciprocal scale factor。
     // x >= 0 时放大为 1 + x；x < 0 时缩小为 1 / (1 - x)。
@@ -245,7 +215,11 @@ Parameters sample_parameters(std::mt19937& rng) {
     const double mass_nominal = d.mass;
     const double thrust_to_weight_nominal = max_total_thrust(d) / (mass_nominal * gravity_norm);
 
-    // 1. 随机采样质量。为了覆盖大范围质量，先均匀采样“尺寸”，再用 mass = size^3。
+    // RAPTOR order: sample thrust-to-weight first, then mass, then scale thrust curves.
+    const double thrust_to_weight = uniform(rng, ranges.thrust_to_weight_min, ranges.thrust_to_weight_max);
+    const double factor_thrust_to_weight = thrust_to_weight / thrust_to_weight_nominal;
+
+    // Mass is sampled uniformly in linear size; mass then scales as size^3.
     const double relative_size_min = std::cbrt(ranges.mass_min);
     const double relative_size_max = std::cbrt(ranges.mass_max);
     const double size_new = uniform(rng, relative_size_min, relative_size_max);
@@ -254,11 +228,7 @@ Parameters sample_parameters(std::mt19937& rng) {
     const double factor_mass = mass_new / mass_nominal;
     d.mass = mass_new;
 
-    // 2. 随机采样最大推重比 thrust_to_weight = max_total_thrust / (mass * g)。
-    const double thrust_to_weight = uniform(rng, ranges.thrust_to_weight_min, ranges.thrust_to_weight_max);
-    const double factor_thrust_to_weight = thrust_to_weight / thrust_to_weight_nominal;
-
-    // 3. 同时考虑新质量和目标推重比，缩放所有电机推力曲线系数。
+    // Scale all quadratic thrust-curve coefficients by the same RAPTOR factor.
     const double factor_thrust_coefficients = factor_thrust_to_weight * factor_mass;
     for (auto& rotor_coeffs : d.rotor_thrust_coefficients) {
         for (double& coeff : rotor_coeffs) {
@@ -266,7 +236,7 @@ Parameters sample_parameters(std::mt19937& rng) {
         }
     }
 
-    // 4. 随机采样 torque_to_inertia，并通过调整惯量矩阵 J 来匹配目标角加速度能力。
+    // Sample torque-to-inertia and adjust diagonal inertia like RAPTOR.
     const double max_thrust_per_rotor = thrust_to_weight * d.mass * gravity_norm / N_ROTORS;
     const double first_rotor_distance_nominal = std::abs(d.rotor_positions[0][0]);
     const double max_torque = first_rotor_distance_nominal * std::sqrt(2.0) * max_thrust_per_rotor;
@@ -274,7 +244,7 @@ Parameters sample_parameters(std::mt19937& rng) {
     const double torque_to_inertia = uniform(rng, ranges.torque_to_inertia_min, ranges.torque_to_inertia_max);
     const double torque_to_inertia_factor = torque_to_inertia / torque_to_inertia_nominal;
 
-    // 5. 机臂长度随质量对应的尺寸变化，再叠加 mass_size_deviation 随机偏差。
+    // Scale arm length from mass-derived size plus RAPTOR's reciprocal size deviation.
     const double size_factor = sample_domain_randomization_factor(rng, ranges.mass_size_deviation);
     const double rotor_distance_factor = scale_relative * size_factor;
     const double inertia_factor = torque_to_inertia_factor / rotor_distance_factor;
@@ -289,7 +259,7 @@ Parameters sample_parameters(std::mt19937& rng) {
         }
     }
 
-    // 6. 尺寸变化后，终止阈值和初始位置范围也按最大电机距离更新。
+    // Size-dependent MDP limits are derived from the max rotor distance.
     double max_rotor_distance = 0.0;
     for (const auto& rotor_position : d.rotor_positions) {
         max_rotor_distance = std::max(max_rotor_distance, vector_norm(rotor_position));
@@ -297,25 +267,24 @@ Parameters sample_parameters(std::mt19937& rng) {
     params.termination.position_threshold = max_rotor_distance * 20.0;
     params.init.max_position = max_rotor_distance * 10.0;
 
-    // 7. 随机采样 rotor_torque_constant，四个电机使用同一个数值。
+    // Sample one rotor torque constant and apply it to all rotors.
     const double torque_constant = uniform(rng, ranges.rotor_torque_constant_min, ranges.rotor_torque_constant_max);
     fill_all(d.rotor_torque_constants, torque_constant);
 
-    // 8. 随机采样扰动力标准差。推重比越高，可承受扰动力范围越大。
+    // Disturbance force follows RAPTOR's surplus-thrust formula.
     const double surplus_thrust_to_weight = std::max(0.0, thrust_to_weight - 1.0);
     const double disturbance_multiple = uniform(rng, 0.0, surplus_thrust_to_weight * ranges.disturbance_force_max);
     const double disturbance_force_std = disturbance_multiple * thrust_to_weight * d.mass / 3.0;
     params.random_force = {0.0, disturbance_force_std};
 
-    // 9. 随机采样电机一阶响应时间常数：上升和下降分别采样。
+    // Rising and falling motor time constants are sampled independently.
     const double rising = uniform(rng, ranges.rotor_time_constant_rising_min, ranges.rotor_time_constant_rising_max);
     const double falling = uniform(rng, ranges.rotor_time_constant_falling_min, ranges.rotor_time_constant_falling_max);
     fill_all(d.rotor_time_constants_rising, rising);
     fill_all(d.rotor_time_constants_falling, falling);
 
-    update_hovering_throttle(d);
-
-    // 10. 保存前关闭 domain_randomization，避免读取 JSON 后再次随机化。
+    // RAPTOR does not recompute hovering_throttle_relative before saving sampled JSON.
+    // Keep the Crazyflie nominal value and disable future domain randomization.
     params.domain_randomization = domain_randomization_disabled();
     return params;
 }
