@@ -18,7 +18,7 @@
 // 设计原则：
 // 1. 只使用 C++17 标准库，不依赖 RAPTOR/rl_tools 头文件。
 // 2. 先从一组 Crazyflie 风格的“名义参数”开始。
-// 3. 按 RAPTOR/Python 版本的顺序随机采样质量、推重比、惯量、电机参数等。
+// 3. 按 RAPTOR L2F 的顺序随机采样推重比、质量、惯量、电机参数等。
 // 4. 最后把已经采样好的确定性参数写成 JSON，并把 domain_randomization 清零。
 //
 // 推荐编译命令：
@@ -79,7 +79,7 @@ struct Dynamics {
     Mat3 J{};
     Mat3 J_inv{};
 
-    // 悬停油门占动作范围的比例。采样并缩放推力曲线后需要重新计算。
+    // 悬停油门占动作范围的比例。RAPTOR 保存采样 JSON 时保持 Crazyflie 名义值。
     double hovering_throttle_relative = 0.0;
 
     ActionLimit action_limit{};
@@ -288,42 +288,6 @@ double max_total_thrust(const Dynamics& dynamics) {
     return total;
 }
 
-void update_hovering_throttle(Dynamics& dynamics) {
-    // 悬停时四个电机总推力等于重力：sum(thrust_i) = mass * |gravity|。
-    // 因为四个电机使用同一条平均推力曲线，所以先计算“单个电机需要承担的悬停推力”。
-    const double per_rotor_hover_thrust = dynamics.mass * vector_norm(dynamics.gravity) / N_ROTORS;
-
-    // 对四个电机的 c0/c1/c2 取平均，得到一条平均推力曲线。
-    double c0 = 0.0;
-    double c1 = 0.0;
-    double c2 = 0.0;
-    for (const auto& coeffs : dynamics.rotor_thrust_coefficients) {
-        c0 += coeffs[0];
-        c1 += coeffs[1];
-        c2 += coeffs[2];
-    }
-    c0 /= N_ROTORS;
-    c1 /= N_ROTORS;
-    c2 /= N_ROTORS;
-
-    double throttle = 0.0;
-    if (std::abs(c2) < 1e-12) {
-        // 如果二次项非常小，就退化为线性方程：c0 + c1*u = hover_thrust。
-        throttle = (per_rotor_hover_thrust - c0) / c1;
-    } else {
-        // 解二次方程：c2*u^2 + c1*u + (c0 - hover_thrust) = 0。
-        const double discriminant = std::max(0.0, c1 * c1 - 4.0 * c2 * (c0 - per_rotor_hover_thrust));
-        throttle = (-c1 + std::sqrt(discriminant)) / (2.0 * c2);
-    }
-
-    const double min_action = dynamics.action_limit.min;
-    const double max_action = dynamics.action_limit.max;
-
-    // 转成相对比例。当前 action 范围是 [0,1]，所以这里数值等于 throttle 本身；
-    // 但保留这个公式可以兼容未来 action_limit 改成其他范围。
-    dynamics.hovering_throttle_relative = (throttle - min_action) / (max_action - min_action);
-}
-
 double sample_domain_randomization_factor(std::mt19937& rng, double value_range) {
     // RAPTOR/rl_tools 对尺寸偏差使用一个 reciprocal scale factor。
     // x >= 0 时放大为 1 + x；x < 0 时缩小为 1 / (1 - x)。
@@ -348,7 +312,12 @@ Parameters sample_parameters(std::mt19937& rng) {
     // 后面会采样一个目标 thrust_to_weight，并用二者比值缩放推力曲线。
     const double thrust_to_weight_nominal = max_total_thrust(d) / (mass_nominal * gravity_norm);
 
-    // 1. 随机采样质量。为了覆盖大范围质量，先均匀采样“尺寸”，再用 mass = size^3。
+    // 1. 随机采样最大推重比 thrust_to_weight = max_total_thrust / (mass * g)。
+    // RAPTOR L2F 先采推重比，再采质量，后面用二者共同缩放推力曲线。
+    const double thrust_to_weight = uniform(rng, ranges.thrust_to_weight_min, ranges.thrust_to_weight_max);
+    const double factor_thrust_to_weight = thrust_to_weight / thrust_to_weight_nominal;
+
+    // 2. 随机采样质量。为了覆盖大范围质量，先均匀采样“尺寸”，再用 mass = size^3。
     // 这样做的直觉是：如果几何尺寸放大 s 倍，体积和质量大约放大 s^3 倍。
     const double relative_size_min = std::cbrt(ranges.mass_min);
     const double relative_size_max = std::cbrt(ranges.mass_max);
@@ -360,11 +329,6 @@ Parameters sample_parameters(std::mt19937& rng) {
     const double scale_relative = std::cbrt(mass_new / mass_nominal);
     const double factor_mass = mass_new / mass_nominal;
     d.mass = mass_new;
-
-    // 2. 随机采样最大推重比 thrust_to_weight = max_total_thrust / (mass * g)。
-    // 推重比越大，飞机最大推力相对自重越强。
-    const double thrust_to_weight = uniform(rng, ranges.thrust_to_weight_min, ranges.thrust_to_weight_max);
-    const double factor_thrust_to_weight = thrust_to_weight / thrust_to_weight_nominal;
 
     // 3. 同时考虑新质量和目标推重比，缩放所有电机推力曲线系数。
     // 质量变大，需要更大总推力才能达到同样推重比；目标推重比变大，也需要更大总推力。
@@ -433,9 +397,8 @@ Parameters sample_parameters(std::mt19937& rng) {
     fill_all(d.rotor_time_constants_rising, rising);
     fill_all(d.rotor_time_constants_falling, falling);
 
-    update_hovering_throttle(d);
-
-    // 10. 保存前关闭 domain_randomization，避免读取 JSON 后再次随机化。
+    // 10. RAPTOR 保存采样 JSON 时不会重新计算 hovering_throttle_relative。
+    // 这里保持 Crazyflie 名义值，并关闭 domain_randomization，避免读取 JSON 后再次随机化。
     params.domain_randomization = domain_randomization_disabled();
     return params;
 }
