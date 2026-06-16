@@ -24,7 +24,7 @@
 // 推荐编译命令：
 // g++ -std=c++17 -O2 cpp/sample_dynamics_parameters.cpp -o sample_dynamics_parameters_cpp
 
-namespace fs = std::filesystem;
+namespace fs = std::filesystem;//处理文件和目录的工具
 
 // 四旋翼固定有 4 个电机/旋翼。
 constexpr int N_ROTORS = 4;
@@ -88,6 +88,7 @@ struct Dynamics {
 struct RangeConfig {
     // 以下字段就是 RAPTOR/Python 版本使用的随机采样范围。
     // min/max 成对出现的字段使用均匀分布采样。
+    //推重比范围
     double thrust_to_weight_min = 1.5;
     double thrust_to_weight_max = 5.0;
 
@@ -153,12 +154,12 @@ struct Parameters {
     // 这个结构体对应最终 JSON 的主要内容。
     // 为了让代码更容易读，reward、noise、trajectory 等固定字段没有单独建结构体，
     // 而是在 write_json() 里直接写出固定值。
-    Dynamics dynamics{};
-    InitConfig init{};
-    TerminationConfig termination{};
-    Disturbance random_force{};
-    Disturbance random_torque{};
-    RangeConfig domain_randomization{};
+    Dynamics dynamics{};              // 动力学参数：机体几何、推力曲线、电机响应、质量、重力、惯量等
+    InitConfig init{};                // 初始状态参数：起始位置、角度、速度范围等
+    TerminationConfig termination{};  // 终止条件参数：位置/速度/姿态等越界阈值
+    Disturbance random_force{};       // 随机外力扰动：风扰动、外部推力等
+    Disturbance random_torque{};      // 随机外力矩扰动：外部转矩、姿态干扰等
+    RangeConfig domain_randomization{}; // 领域随机化范围：采样质量、推重比、惯量、电机参数等
 };
 
 struct ProgramOptions {
@@ -222,6 +223,7 @@ RangeConfig domain_randomization_disabled() {
     return disabled;
 }
 
+//这个函数主要是在初始化dynamics
 Parameters nominal_parameters() {
     // 基础模板使用 Crazyflie 风格参数，和 Python 版本保持一致。
     // 每次采样都会从这份模板重新开始，避免上一次采样影响下一次采样。
@@ -335,9 +337,9 @@ double sample_domain_randomization_factor(std::mt19937& rng, double value_range)
 Parameters sample_parameters(std::mt19937& rng) {
     // 这个函数是整个程序最重要的部分：生成一组随机动力学参数。
     // 注意：每次调用都先复制名义参数，再在这份副本上做随机缩放。
-    Parameters params = nominal_parameters();
-    const RangeConfig ranges = raptor_sampling_ranges();
-    Dynamics& d = params.dynamics;
+    Parameters params = nominal_parameters();//初始化无人机参数
+    const RangeConfig ranges = raptor_sampling_ranges();//确定好无人机参数的范围
+    Dynamics& d = params.dynamics;//用d代表前面初始化过的无人机参数
 
     const double gravity_norm = vector_norm(d.gravity);
     const double mass_nominal = d.mass;
@@ -620,11 +622,11 @@ ProgramOptions parse_args(int argc, char** argv) {
     //   --num 10
     //   --seed 0
     //   --output-dir test_output_cpp
-    //
     // 这里使用最简单的手写解析方式，避免引入额外依赖。
     ProgramOptions options;
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
+        //临时定义了一个函数，给后面使用
         auto require_value = [&](const std::string& name) -> std::string {
             // 像 --num 这种参数后面必须跟一个值；如果缺值就报错。
             if (i + 1 >= argc) {
@@ -659,23 +661,35 @@ void write_samples(int num, unsigned int seed, const fs::path& output_dir) {
 
     // mt19937 是 C++ 标准库里的伪随机数生成器。
     // 同一个 seed 会得到同样的随机序列，便于复现实验。
+    //用seed初始化伪随机数生成器rng
     std::mt19937 rng(seed);
 
     for (int index = 0; index < num; ++index) {
         // 每个 index 生成一组独立参数，并写到 index.json。
-        const Parameters params = sample_parameters(rng);
+        const Parameters params = sample_parameters(rng);//这里跑一次就代表生成了一组参数
         const fs::path output_path = output_dir / (std::to_string(index) + ".json");
-        std::ofstream output(output_path);
+        std::ofstream output(output_path);//生成文件
         if (!output) {
             throw std::runtime_error("failed to open output file: " + output_path.string());
         }
-        write_json(output, params);
-    }
+        write_json(output, params);//把参数写入文件
+    }//循环num次
 }
 
+//argc：参数个数，包含程序本身;argv：字符串数组
+//我运行的命令：./sample_dynamics_parameters_cpp --num 10 --seed 0 --output-dir test_output_cpp
+//argc = 7
+// argv[0] = ./sample_dynamics_parameters_cpp
+// argv[1] = --num
+// argv[2] = 10
+// argv[3] = --seed
+// argv[4] = 0
+// argv[5] = --output-dir
+// argv[6] = test_output_cpp
 int main(int argc, char** argv) {
     try {
         // 主流程：解析参数 -> 采样并写文件 -> 打印结果。
+        //获取num，seed，output_dir赋值
         const ProgramOptions options = parse_args(argc, argv);
         write_samples(options.num, options.seed, options.output_dir);
         std::cout << "wrote " << options.num << " parameter files to " << options.output_dir << "\n";
