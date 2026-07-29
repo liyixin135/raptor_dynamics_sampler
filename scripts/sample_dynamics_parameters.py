@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Generate RAPTOR-style quadrotor dynamics parameter JSON files.
+"""Generate RAPTOR L2F-style quadrotor dynamics parameter JSON files.
 
-This script is a standalone Python implementation inspired by RAPTOR's
+This script is a standalone Python implementation aligned with RAPTOR's
 foundation_policy/pre_training/sample_dynamics_parameters.cpp and the
 rl_tools l2f sample_initial_parameters() logic.
 """
@@ -18,7 +18,7 @@ N_ROTORS = 4
 
 
 def nominal_parameters() -> Dict[str, Any]:
-    """Return Crazyflie-based nominal parameters used as the sampling baseline."""
+    """Return Crazyflie defaults from RAPTOR's l2f dynamics registry."""
     dynamics = {
         # Rotor positions in body frame, meters.
         "rotor_positions": [
@@ -137,7 +137,7 @@ def nominal_parameters() -> Dict[str, Any]:
 
 
 def raptor_sampling_ranges() -> Dict[str, float]:
-    """Domain-randomization ranges copied from RAPTOR's pre-training sampler."""
+    """Domain-randomization ranges from RAPTOR's pre-training sampler."""
     return {
         "thrust_to_weight_min": 1.5,
         "thrust_to_weight_max": 5.0,
@@ -190,24 +190,8 @@ def max_total_thrust(dynamics: Dict[str, Any]) -> float:
     return total
 
 
-def update_hovering_throttle(dynamics: Dict[str, Any]) -> None:
-    """Recompute hover throttle fraction from the averaged quadratic thrust curve."""
-    per_rotor_hover_thrust = dynamics["mass"] * vector_norm(dynamics["gravity"]) / N_ROTORS
-    c0 = sum(coeffs[0] for coeffs in dynamics["rotor_thrust_coefficients"]) / N_ROTORS
-    c1 = sum(coeffs[1] for coeffs in dynamics["rotor_thrust_coefficients"]) / N_ROTORS
-    c2 = sum(coeffs[2] for coeffs in dynamics["rotor_thrust_coefficients"]) / N_ROTORS
-    if abs(c2) < 1e-12:
-        throttle = (per_rotor_hover_thrust - c0) / c1
-    else:
-        discriminant = max(0.0, c1 * c1 - 4.0 * c2 * (c0 - per_rotor_hover_thrust))
-        throttle = (-c1 + math.sqrt(discriminant)) / (2.0 * c2)
-    min_action = dynamics["action_limit"]["min"]
-    max_action = dynamics["action_limit"]["max"]
-    dynamics["hovering_throttle_relative"] = (throttle - min_action) / (max_action - min_action)
-
-
 def sample_parameters(rng: random.Random) -> Dict[str, Any]:
-    """Sample one parameter set with the same core ordering as RAPTOR."""
+    """Sample one parameter set with RAPTOR's core ordering."""
     params = nominal_parameters()
     ranges = raptor_sampling_ranges()
     dynamics = params["dynamics"]
@@ -288,7 +272,8 @@ def sample_parameters(rng: random.Random) -> Dict[str, Any]:
     dynamics["rotor_time_constants_rising"] = [rising] * N_ROTORS
     dynamics["rotor_time_constants_falling"] = [falling] * N_ROTORS
 
-    # RAPTOR disables future domain randomization in saved pre-training JSON files.
+    # RAPTOR does not recompute hovering_throttle_relative before saving sampled JSON.
+    # It disables future domain randomization in saved pre-training JSON files.
     params["domain_randomization"] = domain_randomization_disabled()
     return params
 
